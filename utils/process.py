@@ -2,9 +2,14 @@ import numpy as np
 import pickle as pkl
 import networkx as nx
 import scipy.sparse as sp
+from scipy.sparse import csr_matrix
 from scipy.sparse.linalg.eigen.arpack import eigsh
 import sys
 
+
+mapping = {"Case_Based": 0, "Genetic_Algorithms": 1, "Neural_Networks": 2, "Probabilistic_Methods": 3,
+           "Reinforcement_Learning": 4, "Rule_Learning": 5, "Theory": 6}
+mapping1 = {"Agents": 0, "IR": 1, "DB": 2, "AI": 3, "HCI": 4, "ML": 5}
 """
  Prepare adjacency matrix by expanding up to a given neighbourhood.
  This will insert loops on every node.
@@ -42,6 +47,58 @@ def sample_mask(idx, l):
     mask[idx] = 1
     return np.array(mask, dtype=np.bool)
 
+
+def preprocess(dataset='data/citeseer', directed='directed', split=0.8):
+    f = open(dataset + '.cites', 'r')
+    mask, labels, attribute = get_dataset(dataset)
+    G = None
+    if directed == "directed":
+        G = nx.DiGraph()
+    for line in f.readlines():
+        edge = line.strip().split()
+        if edge[0] != edge[1]:
+            G.add_edge(int(mask[edge[0]]), int(mask[edge[1]]))
+    return mask, labels, attribute, G
+
+
+def get_dataset(dataset='data/citeseer'):
+    f = open(dataset + ".content", 'r')
+    lines = f.readlines()
+    mask = {}
+    labels = np.zeros(len(lines))
+    if 'cora' in dataset:
+        attribute = np.zeros((len(lines), 1433))
+    else:
+        attribute = np.zeros((len(lines), 3703))
+    idx = 0
+    for line in lines:
+        line = line.strip().split()
+        mask[line[0]] = idx
+        attribute[idx] = np.array(list(map(int, line[1:-1])))
+        if 'cora' in dataset:
+            labels[idx] = mapping[line[-1]]
+        else:
+            labels[idx] = mapping1[line[-1]]
+        idx += 1
+    return mask, labels, attribute
+
+
+def train_test_split(n_nodes, testing):
+    # splits = np.array_split(np.random.permutation(range(n_nodes)), 5)
+    #
+    # train_index = np.concatenate(splits[:3], axis=0)
+    # val_index = torch.LongTensor(splits[3])
+    # test_index = torch.LongTensor(splits[-1])
+    splits = np.array_split(np.random.permutation(range(n_nodes)), 20)
+    n_testing = int(testing * 100 / 5)
+    n_val = int((20 - n_testing) / 2)
+
+    test_index = np.concatenate(splits[:n_testing], axis=0)
+    val_index = np.concatenate(splits[n_testing:n_testing + n_val], axis=0)
+    train_index = np.concatenate(splits[n_testing + n_val:], axis=0)
+    return train_index, val_index, test_index
+
+
 def load_data(dataset_str): # {'pubmed', 'citeseer', 'cora'}
     """Load data."""
     names = ['x', 'y', 'tx', 'ty', 'allx', 'ally', 'graph']
@@ -54,6 +111,8 @@ def load_data(dataset_str): # {'pubmed', 'citeseer', 'cora'}
                 objects.append(pkl.load(f))
 
     x, y, tx, ty, allx, ally, graph = tuple(objects)
+
+
     test_idx_reorder = parse_index_file("data/ind.{}.test.index".format(dataset_str))
     test_idx_range = np.sort(test_idx_reorder)
 
@@ -70,14 +129,25 @@ def load_data(dataset_str): # {'pubmed', 'citeseer', 'cora'}
 
     features = sp.vstack((allx, tx)).tolil()
     features[test_idx_reorder, :] = features[test_idx_range, :]
-    adj = nx.adjacency_matrix(nx.from_dict_of_lists(graph))
+    # adj = nx.adjacency_matrix(nx.from_dict_of_lists(graph))
 
     labels = np.vstack((ally, ty))
     labels[test_idx_reorder, :] = labels[test_idx_range, :]
+    mask, temp_label, features, G = preprocess()
+    labels = np.zeros((3327, 3703))
+    for i in range(len(temp_label)):
+        labels[i, int(temp_label[i])] = 1
 
-    idx_test = test_idx_range.tolist()
-    idx_train = range(len(y))
-    idx_val = range(len(y), len(y)+500)
+    G = G.subgraph(max(nx.connected_component_subgraphs(G.copy().to_undirected()), key=len).nodes())
+    features = features[G.nodes()]
+    labels = labels[G.nodes()]
+
+    idx_train, idx_val, idx_test = train_test_split(len(list(G.nodes())), 0.6)
+    G = G.to_undirected()
+    adj = nx.adjacency_matrix(G)
+    # idx_test = test_idx_range.tolist()
+    # idx_train = range(len(y))
+    # idx_val = range(len(y), len(y)+500)
 
     train_mask = sample_mask(idx_train, labels.shape[0])
     val_mask = sample_mask(idx_val, labels.shape[0])
@@ -93,7 +163,7 @@ def load_data(dataset_str): # {'pubmed', 'citeseer', 'cora'}
     print(adj.shape)
     print(features.shape)
 
-    return adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask
+    return adj, csr_matrix(features), y_train, y_val, y_test, train_mask, val_mask, test_mask
 
 def load_random_data(size):
 
